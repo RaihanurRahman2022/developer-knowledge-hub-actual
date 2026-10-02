@@ -193,6 +193,7 @@ export interface KnowledgeStore {
   recentlyVisited: string[]; // topicIds in order of visit
   lastStudiedTopicId?: string;
   sectionExpandedState: Record<string, boolean>; // sectionId -> isExpanded
+  seededIds?: string[]; // seed subject/section/topic ids already merged (so deleted seed items stay deleted)
 }
 
 export interface SearchResult {

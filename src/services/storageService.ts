@@ -3,16 +3,147 @@ import { initialSubjects, initialSections, initialTopics, initialProgress, initi
 import { supabase } from './supabaseClient';
 
 const STORAGE_KEY = 'eng_knowledge_hub_store_v3';
+const PENDING_SYNC_KEY = 'eng_hub_pending_sync';
+const STORE_VERSION = 8;
+
+// Supabase rows (table knowledge_hub_store). Content is large and changes rarely;
+// progress is small and changes on every visit, so they are synced separately.
+const CONTENT_ROW_ID = 'primary_hub';
+const PROGRESS_ROW_ID = 'primary_progress';
+const PUSH_DEBOUNCE_MS = 1500;
+
+type SyncPart = 'content' | 'progress';
+
+type ContentData = Pick<KnowledgeStore, 'version' | 'subjects' | 'sections' | 'topics' | 'seededIds'>;
+type ProgressData = Pick<KnowledgeStore, 'progress' | 'recentlyVisited' | 'lastStudiedTopicId' | 'sectionExpandedState'>;
+
+export type SyncState = 'unconfigured' | 'loading' | 'synced' | 'pending' | 'syncing' | 'read-only' | 'error';
+
+export interface SyncStatus {
+  state: SyncState;
+  signedIn: boolean;
+  lastSyncedAt?: string;
+  message?: string;
+}
+
+const DEFAULT_EXPANDED_STATE = { 'sec-dotnet-01-history': true, 'sec-ef-01': true, 'sec-sql-01': true };
+
+function contentOf(store: KnowledgeStore): ContentData {
+  return {
+    version: store.version,
+    subjects: store.subjects,
+    sections: store.sections,
+    topics: store.topics,
+    seededIds: store.seededIds,
+  };
+}
+
+function progressOf(store: KnowledgeStore): ProgressData {
+  return {
+    progress: store.progress,
+    recentlyVisited: store.recentlyVisited,
+    lastStudiedTopicId: store.lastStudiedTopicId,
+    sectionExpandedState: store.sectionExpandedState,
+  };
+}
+
+function createSeedStore(): KnowledgeStore {
+  return {
+    version: STORE_VERSION,
+    subjects: initialSubjects,
+    sections: initialSections,
+    topics: initialTopics,
+    progress: initialProgress,
+    recentlyVisited: initialRecentlyVisited,
+    lastStudiedTopicId: undefined,
+    sectionExpandedState: { ...DEFAULT_EXPANDED_STATE },
+    seededIds: allSeedIds(),
+  };
+}
+
+function allSeedIds(): string[] {
+  return [...initialSubjects, ...initialSections, ...initialTopics].map((item) => item.id);
+}
+
+/**
+ * Adds seed subjects/sections/topics that this store has never received.
+ * `seededIds` remembers every seed id already merged, so items the user deleted
+ * are not resurrected. Existing items are never overwritten (preserves edits).
+ */
+function mergeSeedContent(input: KnowledgeStore): { store: KnowledgeStore; changed: boolean } {
+  const store: KnowledgeStore = {
+    ...input,
+    subjects: Array.isArray(input.subjects) ? [...input.subjects] : [],
+    sections: Array.isArray(input.sections) ? [...input.sections] : [],
+    topics: Array.isArray(input.topics) ? [...input.topics] : [],
+    progress: input.progress || {},
+    recentlyVisited: Array.isArray(input.recentlyVisited) ? input.recentlyVisited : [],
+    sectionExpandedState: input.sectionExpandedState || {},
+  };
+  let changed = store.version !== STORE_VERSION || !Array.isArray(input.seededIds);
+  const seeded = new Set(input.seededIds || []);
+
+  // Obsolete section replaced by sec-dotnet-01-history.
+  const legacyIdx = store.sections.findIndex((s) => s.id === 'sec-dotnet-history');
+  if (legacyIdx !== -1) {
+    store.sections.splice(legacyIdx, 1);
+    changed = true;
+  }
+
+  const addMissing = <T extends { id: string }>(target: T[], seedItems: T[]) => {
+    const existing = new Set(target.map((item) => item.id));
+    for (const item of seedItems) {
+      if (!existing.has(item.id) && !seeded.has(item.id)) {
+        target.push({ ...item });
+        changed = true;
+      }
+    }
+  };
+
+  addMissing(store.subjects, initialSubjects);
+  addMissing(store.sections, initialSections);
+  addMissing(store.topics, initialTopics);
+
+  // Keep section.topicIds in step with topics that point at the section.
+  store.sections = store.sections.map((sec) => {
+    const missing = store.topics
+      .filter((t) => t.sectionId === sec.id && !sec.topicIds.includes(t.id))
+      .map((t) => t.id);
+    if (missing.length === 0) return sec;
+    changed = true;
+    return { ...sec, topicIds: [...sec.topicIds, ...missing] };
+  });
+
+  store.sections.sort((a, b) => a.order - b.order);
+  store.seededIds = Array.from(new Set([...seeded, ...allSeedIds()]));
+  store.version = STORE_VERSION;
+  return { store, changed };
+}
 
 export class StorageService {
   private static instance: StorageService;
   private store: KnowledgeStore;
   private listeners: Set<() => void> = new Set();
-  private supabaseSyncInProgress = false;
+
+  private signedIn = false;
+  private pending: Record<SyncPart, boolean>;
+  private changeCounter: Record<SyncPart, number> = { content: 0, progress: 0 };
+  private pushTimer: ReturnType<typeof setTimeout> | undefined;
+  private pushInFlight = false;
+  private pushRequestedWhileInFlight = false;
+  private syncStatus: SyncStatus;
 
   private constructor() {
+    this.pending = this.loadPendingFlags();
     this.store = this.loadFromStorage();
-    this.tryInitialSupabasePull();
+    this.syncStatus = supabase
+      ? { state: 'loading', signedIn: false }
+      : {
+          state: 'unconfigured',
+          signedIn: false,
+          message: 'Supabase is not configured (VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY). Data is saved in this browser only.',
+        };
+    this.initCloudSync();
   }
 
   public static getInstance(): StorageService {
@@ -22,198 +153,272 @@ export class StorageService {
     return StorageService.instance;
   }
 
-  private async tryInitialSupabasePull(): Promise<void> {
-    try {
-      const { data, error } = await supabase
-        .from('knowledge_hub_store')
-        .select('data')
-        .eq('id', 'primary_hub')
-        .maybeSingle();
-
-      if (data && data.data && Array.isArray(data.data.subjects)) {
-        this.store = data.data;
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(this.store));
-        this.notifyListeners();
-      }
-    } catch (err) {
-      // Supabase table may not be created yet, fallback to localStorage gracefully
-    }
-  }
+  // ---------------------------------------------------------------------------
+  // Local persistence
+  // ---------------------------------------------------------------------------
 
   private loadFromStorage(): KnowledgeStore {
     try {
-      if (typeof window !== 'undefined' && window.localStorage) {
-        const serialized = localStorage.getItem(STORAGE_KEY);
-        if (serialized) {
-          const parsed = JSON.parse(serialized);
-          if (parsed && parsed.subjects && parsed.topics) {
-            let modified = false;
-
-            if (!Array.isArray(parsed.sections)) {
-              parsed.sections = [];
-              modified = true;
-            }
-
-            // Remove obsolete old sec-dotnet-history if present and replace with sec-dotnet-01-history
-            const oldHistoryIdx = parsed.sections.findIndex((s: Section) => s.id === 'sec-dotnet-history');
-            if (oldHistoryIdx !== -1) {
-              parsed.sections.splice(oldHistoryIdx, 1);
-              modified = true;
-            }
-
-            // Sync all seed sections (e.g. 18 .NET curriculum sections)
-            for (const sSec of initialSections) {
-              const existingSecIdx = parsed.sections.findIndex((s: Section) => s.id === sSec.id);
-              if (existingSecIdx === -1) {
-                parsed.sections.push({ ...sSec });
-                modified = true;
-              } else if (parsed.version < 7) {
-                parsed.sections[existingSecIdx] = { ...sSec };
-                modified = true;
-              }
-            }
-
-            // Sync all seed topics
-            for (const sTop of initialTopics) {
-              const existingTopIdx = parsed.topics.findIndex((t: Topic) => t.id === sTop.id);
-              if (existingTopIdx === -1) {
-                parsed.topics.push({ ...sTop });
-                modified = true;
-              } else if (parsed.version < 7) {
-                parsed.topics[existingTopIdx] = { ...sTop };
-                modified = true;
-              }
-            }
-
-            parsed.sections.sort((a: Section, b: Section) => a.order - b.order);
-
-            if (parsed.version < 7 || modified) {
-              parsed.version = 7;
-              if (parsed.sectionExpandedState) {
-                parsed.sectionExpandedState['sec-dotnet-01-history'] = true;
-                parsed.sectionExpandedState['sec-ef-01'] = true;
-                parsed.sectionExpandedState['sec-sql-01'] = true;
-              }
-              // Also sync subjects so SQL is pinned and in position 3
-              parsed.subjects = initialSubjects;
-              this.saveToStorage(parsed);
-            }
-
-            return parsed;
+      const serialized = localStorage.getItem(STORAGE_KEY);
+      if (serialized) {
+        const parsed = JSON.parse(serialized) as KnowledgeStore;
+        if (parsed && Array.isArray(parsed.subjects) && Array.isArray(parsed.topics)) {
+          const { store, changed } = mergeSeedContent(parsed);
+          if (changed) {
+            this.markPending('content');
+            this.writeLocal(store);
           }
+          return store;
         }
       }
     } catch (e) {
       console.error('Failed to load knowledge store from localStorage:', e);
     }
 
-    // Default initialized store with requested subjects in exact order
-    const defaultStore: KnowledgeStore = {
-      version: 7,
-      subjects: initialSubjects,
-      sections: initialSections,
-      topics: initialTopics,
-      progress: initialProgress,
-      recentlyVisited: initialRecentlyVisited,
-      lastStudiedTopicId: undefined,
-      sectionExpandedState: { 'sec-dotnet-01-history': true, 'sec-ef-01': true, 'sec-sql-01': true },
-    };
-
-    this.saveToStorage(defaultStore);
-    return defaultStore;
+    const seedStore = createSeedStore();
+    this.writeLocal(seedStore);
+    return seedStore;
   }
 
-  private saveToStorage(store: KnowledgeStore): void {
+  private writeLocal(store: KnowledgeStore): void {
     try {
-      if (typeof window !== 'undefined' && window.localStorage) {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
-      }
-      this.store = store;
-      this.notifyListeners();
-
-      // Async cloud sync to Supabase in background
-      this.asyncPushToSupabase(store);
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
     } catch (e) {
       console.error('Failed to save to localStorage:', e);
     }
   }
 
-  private async asyncPushToSupabase(store: KnowledgeStore): Promise<void> {
-    if (this.supabaseSyncInProgress) return;
-    this.supabaseSyncInProgress = true;
+  private loadPendingFlags(): Record<SyncPart, boolean> {
     try {
-      await supabase.from('knowledge_hub_store').upsert({
-        id: 'primary_hub',
-        data: store,
-        updated_at: new Date().toISOString(),
-      });
+      const raw = localStorage.getItem(PENDING_SYNC_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        return { content: Boolean(parsed.content), progress: Boolean(parsed.progress) };
+      }
     } catch {
-      // Ignored for offline or unconfigured table
-    } finally {
-      this.supabaseSyncInProgress = false;
+      // fall through
+    }
+    return { content: false, progress: false };
+  }
+
+  private markPending(part: SyncPart): void {
+    this.pending[part] = true;
+    this.changeCounter[part]++;
+    this.persistPendingFlags();
+  }
+
+  private persistPendingFlags(): void {
+    try {
+      localStorage.setItem(PENDING_SYNC_KEY, JSON.stringify(this.pending));
+    } catch {
+      // ignore
     }
   }
 
-  public async pushToSupabase(): Promise<{ success: boolean; message: string }> {
-    try {
-      const { error } = await supabase.from('knowledge_hub_store').upsert({
-        id: 'primary_hub',
-        data: this.store,
-        updated_at: new Date().toISOString(),
-      });
+  /** Every mutation goes through here: persists locally, notifies, and schedules a cloud push. */
+  private saveToStorage(store: KnowledgeStore): void {
+    const prev = this.store;
+    const contentChanged =
+      prev.subjects !== store.subjects ||
+      prev.sections !== store.sections ||
+      prev.topics !== store.topics ||
+      prev.version !== store.version;
+    const progressChanged =
+      prev.progress !== store.progress ||
+      prev.recentlyVisited !== store.recentlyVisited ||
+      prev.lastStudiedTopicId !== store.lastStudiedTopicId ||
+      prev.sectionExpandedState !== store.sectionExpandedState;
 
-      if (error) {
-        return { success: false, message: `Supabase Error: ${error.message}` };
-      }
+    if (contentChanged) this.markPending('content');
+    if (progressChanged) this.markPending('progress');
 
-      return { success: true, message: 'Successfully synced all subjects & topics to Supabase!' };
-    } catch (e: any) {
-      return { success: false, message: `Sync error: ${e.message}` };
-    }
+    this.store = store;
+    this.writeLocal(store);
+    this.notifyListeners();
+    this.schedulePush();
   }
 
-  public async pullFromSupabase(): Promise<{ success: boolean; message: string }> {
-    try {
-      const { data, error } = await supabase
-        .from('knowledge_hub_store')
-        .select('data')
-        .eq('id', 'primary_hub')
-        .maybeSingle();
+  // ---------------------------------------------------------------------------
+  // Supabase sync
+  // ---------------------------------------------------------------------------
 
-      if (error) {
-        return { success: false, message: `Supabase Error: ${error.message}` };
+  private async initCloudSync(): Promise<void> {
+    if (!supabase) return;
+
+    const { data } = await supabase.auth.getSession();
+    this.signedIn = Boolean(data.session);
+
+    supabase.auth.onAuthStateChange((event, session) => {
+      const wasSignedIn = this.signedIn;
+      this.signedIn = Boolean(session);
+      if (event === 'SIGNED_IN' && !wasSignedIn) {
+        // Owner just signed in: reconcile with the cloud and push anything pending.
+        void this.pullFromCloud();
+      } else if (event === 'SIGNED_OUT') {
+        this.updateSyncStatus();
       }
+    });
 
-      if (!data || !data.data) {
-        return { success: false, message: 'No knowledge store found on Supabase yet. Try Push first.' };
-      }
-
-      this.saveToStorage(data.data);
-      return { success: true, message: 'Successfully pulled and restored data from Supabase!' };
-    } catch (e: any) {
-      return { success: false, message: `Fetch error: ${e.message}` };
-    }
+    await this.pullFromCloud();
   }
 
-  public async checkSupabaseStatus(): Promise<{ connected: boolean; tableExists: boolean; message?: string }> {
-    try {
-      const { data, error } = await supabase
-        .from('knowledge_hub_store')
-        .select('id')
-        .limit(1);
+  /**
+   * Loads both rows from Supabase. Parts with unpushed local changes keep the local copy;
+   * everything else is replaced by the cloud copy. Seed content is merged afterwards.
+   */
+  private async pullFromCloud(): Promise<{ success: boolean; message: string }> {
+    if (!supabase) return { success: false, message: 'Supabase is not configured.' };
 
-      if (error) {
-        if (error.code === '42P01') {
-          // Table does not exist
-          return { connected: true, tableExists: false, message: 'Table knowledge_hub_store does not exist in Supabase yet.' };
+    this.setSyncStatus({ state: 'loading' });
+    const { data: rows, error } = await supabase
+      .from('knowledge_hub_store')
+      .select('id, data')
+      .in('id', [CONTENT_ROW_ID, PROGRESS_ROW_ID]);
+
+    if (error) {
+      const message =
+        error.code === '42P01'
+          ? 'Table knowledge_hub_store does not exist. Run supabase/setup.sql in the Supabase SQL editor.'
+          : `Could not load from Supabase: ${error.message}`;
+      this.setSyncStatus({ state: 'error', message });
+      return { success: false, message };
+    }
+
+    const contentRow = rows?.find((r) => r.id === CONTENT_ROW_ID)?.data as (KnowledgeStore & ContentData) | undefined;
+    const progressRow = rows?.find((r) => r.id === PROGRESS_ROW_ID)?.data as ProgressData | undefined;
+
+    let next: KnowledgeStore = { ...this.store };
+
+    // Only the signed-in owner can push content, so visitors always follow the cloud copy.
+    if (contentRow && Array.isArray(contentRow.subjects) && (!this.pending.content || !this.signedIn)) {
+      next = { ...next, ...contentOf(contentRow as KnowledgeStore) };
+      this.pending.content = false;
+      this.persistPendingFlags();
+    } else if (!contentRow) {
+      // Empty cloud: seed it from this browser.
+      this.markPending('content');
+    }
+
+    // Older clients stored progress inside the content row.
+    const cloudProgress = progressRow ?? (contentRow?.progress ? progressOf(contentRow as KnowledgeStore) : undefined);
+    if (cloudProgress && !this.pending.progress) {
+      next = { ...next, ...cloudProgress };
+    }
+    if (!progressRow) {
+      this.markPending('progress');
+    }
+
+    const { store, changed } = mergeSeedContent(next);
+    if (changed) this.markPending('content');
+
+    this.store = store;
+    this.writeLocal(store);
+    this.notifyListeners();
+    this.updateSyncStatus(new Date().toISOString());
+    this.schedulePush(0);
+    return { success: true, message: 'Loaded the latest data from Supabase.' };
+  }
+
+  private schedulePush(delay = PUSH_DEBOUNCE_MS): void {
+    this.updateSyncStatus();
+    if (!supabase || !this.signedIn || (!this.pending.content && !this.pending.progress)) return;
+    clearTimeout(this.pushTimer);
+    this.pushTimer = setTimeout(() => void this.flushPush(), delay);
+  }
+
+  private async flushPush(): Promise<{ success: boolean; message: string }> {
+    if (!supabase) return { success: false, message: 'Supabase is not configured.' };
+    if (!this.signedIn) return { success: false, message: 'Sign in to save changes to Supabase.' };
+    if (this.pushInFlight) {
+      this.pushRequestedWhileInFlight = true;
+      return { success: true, message: 'Sync already in progress.' };
+    }
+
+    this.pushInFlight = true;
+    this.setSyncStatus({ state: 'syncing' });
+    let result = { success: true, message: 'All changes saved to Supabase.' };
+
+    try {
+      for (const part of ['content', 'progress'] as SyncPart[]) {
+        if (!this.pending[part]) continue;
+        const counterAtStart = this.changeCounter[part];
+        const payload = part === 'content' ? contentOf(this.store) : progressOf(this.store);
+        const { error } = await supabase.from('knowledge_hub_store').upsert({
+          id: part === 'content' ? CONTENT_ROW_ID : PROGRESS_ROW_ID,
+          data: payload,
+          updated_at: new Date().toISOString(),
+        });
+        if (error) {
+          result = { success: false, message: `Supabase rejected the save: ${error.message}` };
+          break;
         }
-        return { connected: false, tableExists: false, message: error.message };
+        // Only clear the flag if nothing changed while the request was in flight.
+        if (this.changeCounter[part] === counterAtStart) {
+          this.pending[part] = false;
+          this.persistPendingFlags();
+        }
       }
-
-      return { connected: true, tableExists: true, message: 'Connected and synchronized with Supabase.' };
-    } catch (err: any) {
-      return { connected: false, tableExists: false, message: err.message };
+    } catch (e: any) {
+      result = { success: false, message: `Sync error: ${e?.message || e}` };
+    } finally {
+      this.pushInFlight = false;
     }
+
+    if (!result.success) {
+      this.setSyncStatus({ state: 'error', message: result.message });
+      return result;
+    }
+
+    this.updateSyncStatus(new Date().toISOString());
+    if (this.pushRequestedWhileInFlight || this.pending.content || this.pending.progress) {
+      this.pushRequestedWhileInFlight = false;
+      this.schedulePush(0);
+    }
+    return result;
+  }
+
+  private updateSyncStatus(lastSyncedAt?: string): void {
+    if (!supabase) return;
+    const hasPending = this.pending.content || this.pending.progress;
+    let state: SyncState;
+    let message: string | undefined;
+    if (!this.signedIn) {
+      state = 'read-only';
+      message = hasPending
+        ? 'Not signed in: your changes are kept in this browser only.'
+        : 'Viewing data from Supabase. Sign in to edit.';
+    } else if (hasPending) {
+      state = this.pushInFlight ? 'syncing' : 'pending';
+    } else {
+      state = 'synced';
+      message = 'All changes saved to Supabase.';
+    }
+    this.setSyncStatus({ state, message, lastSyncedAt: lastSyncedAt ?? this.syncStatus.lastSyncedAt });
+  }
+
+  private setSyncStatus(update: Partial<SyncStatus>): void {
+    this.syncStatus = { ...this.syncStatus, ...update, signedIn: this.signedIn };
+    this.notifyListeners();
+  }
+
+  public getSyncStatus(): SyncStatus {
+    return this.syncStatus;
+  }
+
+  /** Push local data to Supabase now (owner only). */
+  public async pushToSupabase(): Promise<{ success: boolean; message: string }> {
+    clearTimeout(this.pushTimer);
+    this.markPending('content');
+    this.markPending('progress');
+    return this.flushPush();
+  }
+
+  /** Discard unpushed local changes and reload everything from Supabase. */
+  public async pullFromSupabase(): Promise<{ success: boolean; message: string }> {
+    clearTimeout(this.pushTimer);
+    this.pending = { content: false, progress: false };
+    this.persistPendingFlags();
+    return this.pullFromCloud();
   }
 
   public subscribe(listener: () => void): () => void {
@@ -748,10 +953,11 @@ export class StorageService {
         return { success: false, message: 'Invalid format: missing subjects or topics array.' };
       }
 
-      this.saveToStorage({
+      const { store } = mergeSeedContent({
+        ...createSeedStore(),
         ...parsed,
-        version: 1,
       });
+      this.saveToStorage(store);
 
       return { success: true, message: `Successfully imported ${parsed.topics.length} topics and ${parsed.subjects.length} subjects!` };
     } catch (e: any) {
@@ -760,21 +966,11 @@ export class StorageService {
   }
 
   public resetToDefaultSeed(): void {
-    const defaultStore: KnowledgeStore = {
-      version: 5,
-      subjects: initialSubjects,
-      sections: initialSections,
-      topics: initialTopics,
-      progress: initialProgress,
-      recentlyVisited: initialRecentlyVisited,
-      lastStudiedTopicId: undefined,
-      sectionExpandedState: { 'sec-dotnet-01-history': true },
-    };
-    this.saveToStorage(defaultStore);
+    this.saveToStorage(createSeedStore());
   }
 
-  public async clearAllSectionsAndTopics(): Promise<{ success: boolean; message: string }> {
-    const updatedStore: KnowledgeStore = {
+  public clearAllSectionsAndTopics(): void {
+    this.saveToStorage({
       ...this.store,
       sections: [],
       topics: [],
@@ -782,9 +978,7 @@ export class StorageService {
       recentlyVisited: [],
       lastStudiedTopicId: undefined,
       sectionExpandedState: {},
-    };
-    this.saveToStorage(updatedStore);
-    return await this.pushToSupabase();
+    });
   }
 }
 

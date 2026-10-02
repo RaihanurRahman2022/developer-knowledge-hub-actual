@@ -14,8 +14,12 @@ import {
   ChevronDown,
   Lock,
   Unlock,
+  Star,
+  Zap,
+  HardDrive,
 } from 'lucide-react';
 import { ThemeMode } from '../../hooks/useTheme';
+import { SyncStatus } from '../../services/storageService';
 
 interface NavbarProps {
   onOpenSearch: () => void;
@@ -31,7 +35,18 @@ interface NavbarProps {
   isUnlocked?: boolean;
   onOpenUnlockModal?: () => void;
   onLock?: () => void;
+  syncStatus?: SyncStatus;
 }
+
+const SYNC_DOT_CLASS: Record<SyncStatus['state'], string> = {
+  synced: 'bg-emerald-500',
+  pending: 'bg-amber-500',
+  syncing: 'bg-indigo-500 animate-pulse',
+  loading: 'bg-indigo-500 animate-pulse',
+  'read-only': 'bg-slate-400',
+  unconfigured: 'bg-slate-400',
+  error: 'bg-rose-500',
+};
 
 export const Navbar: React.FC<NavbarProps> = ({
   onOpenSearch,
@@ -47,6 +62,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   isUnlocked = false,
   onOpenUnlockModal,
   onLock,
+  syncStatus,
 }) => {
   const [isCreateMenuOpen, setIsCreateMenuOpen] = useState(false);
   const createMenuRef = useRef<HTMLDivElement>(null);
@@ -130,7 +146,7 @@ export const Navbar: React.FC<NavbarProps> = ({
             title={
               isUnlocked
                 ? 'Platform Unlocked in Editor Mode (Click to Lock)'
-                : 'Platform Locked in Read-Only Mode (Click to Unlock with password)'
+                : 'Platform Locked in Read-Only Mode (Click to sign in)'
             }
           >
             {isUnlocked ? (
@@ -194,6 +210,46 @@ export const Navbar: React.FC<NavbarProps> = ({
               )}
             </div>
           )}
+
+          {/* Quick Revision & Favorites Links */}
+          {(
+            [
+              { view: 'quick-revision', label: 'Quick Revision', Icon: Zap },
+              { view: 'favorites', label: 'Favorites', Icon: Star },
+            ] as const
+          ).map(({ view, label, Icon }) => (
+            <button
+              key={view}
+              onClick={() => onNavigate(view)}
+              className={`flex items-center gap-1 px-2 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer ${
+                activeView === view
+                  ? 'bg-indigo-100 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300'
+                  : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
+              }`}
+              title={label}
+            >
+              <Icon className="w-3.5 h-3.5 text-indigo-500" />
+              <span className="hidden xl:inline">{label}</span>
+            </button>
+          ))}
+
+          {/* Data Management & Sync Status */}
+          <button
+            onClick={() => onNavigate('manage')}
+            className={`relative p-1.5 rounded-lg transition-colors cursor-pointer ${
+              activeView === 'manage'
+                ? 'bg-indigo-100 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300'
+                : 'text-slate-500 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
+            }`}
+            title={syncStatus ? `Data management — ${syncStatus.message || syncStatus.state}` : 'Data management'}
+          >
+            <HardDrive className="w-4 h-4" />
+            {syncStatus && (
+              <span
+                className={`absolute top-1 right-1 w-2 h-2 rounded-full ring-2 ring-white dark:ring-slate-900 ${SYNC_DOT_CLASS[syncStatus.state]}`}
+              />
+            )}
+          </button>
 
           {/* Interview Mode Link */}
           <button

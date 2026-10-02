@@ -1,11 +1,12 @@
 import React, { useState } from 'react';
-import { Lock, Unlock, X, KeyRound, AlertCircle } from 'lucide-react';
+import { Lock, X, KeyRound, AlertCircle, Mail } from 'lucide-react';
 
 interface UnlockModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onUnlock: (password: string) => boolean;
+  onUnlock: (email: string, password: string) => Promise<boolean>;
   errorMessage?: string;
+  isSubmitting?: boolean;
 }
 
 export const UnlockModal: React.FC<UnlockModalProps> = ({
@@ -13,19 +14,24 @@ export const UnlockModal: React.FC<UnlockModalProps> = ({
   onClose,
   onUnlock,
   errorMessage,
+  isSubmitting = false,
 }) => {
+  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
 
   if (!isOpen) return null;
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const success = onUnlock(password);
+    const success = await onUnlock(email, password);
     if (success) {
       setPassword('');
     }
   };
+
+  const inputClass =
+    'w-full px-3 py-2 text-xs sm:text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-hidden focus:ring-2 focus:ring-indigo-500';
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-2xs animate-in fade-in duration-150">
@@ -54,23 +60,40 @@ export const UnlockModal: React.FC<UnlockModalProps> = ({
         {/* Form */}
         <form onSubmit={handleSubmit} className="p-5 space-y-4">
           <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
-            Enter the master password to enable adding, reshuffling, deleting topics/sections/subjects, and toggling article publish modes.
+            Sign in with your Supabase account to add, reorder, delete and publish content. Changes are saved to Supabase.
           </p>
 
           <div>
             <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1 flex items-center gap-1">
+              <Mail className="w-3.5 h-3.5 text-slate-400" />
+              <span>Email</span>
+            </label>
+            <input
+              type="email"
+              required
+              autoComplete="username"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="you@example.com"
+              className={inputClass}
+              autoFocus
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1 flex items-center gap-1">
               <KeyRound className="w-3.5 h-3.5 text-slate-400" />
-              <span>Master Password</span>
+              <span>Password</span>
             </label>
             <div className="relative">
               <input
                 type={showPassword ? 'text' : 'password'}
                 required
+                autoComplete="current-password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="Enter password..."
-                className="w-full px-3 py-2 text-xs sm:text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-hidden focus:ring-2 focus:ring-indigo-500 pr-16"
-                autoFocus
+                className={`${inputClass} pr-16`}
               />
               <button
                 type="button"
@@ -99,9 +122,10 @@ export const UnlockModal: React.FC<UnlockModalProps> = ({
             </button>
             <button
               type="submit"
-              className="px-4 py-1.5 text-xs font-bold rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white transition-colors cursor-pointer shadow-xs"
+              disabled={isSubmitting}
+              className="px-4 py-1.5 text-xs font-bold rounded-lg bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 text-white transition-colors cursor-pointer shadow-xs"
             >
-              Unlock Controls
+              {isSubmitting ? 'Signing in...' : 'Sign In'}
             </button>
           </div>
         </form>
