@@ -12,8 +12,6 @@ import { NewSubjectModal } from './components/modals/NewSubjectModal';
 import { NewTopicModal } from './components/modals/NewTopicModal';
 import { NewSectionModal } from './components/modals/NewSectionModal';
 import { UnlockModal } from './components/modals/UnlockModal';
-import { FavoritesView } from './components/favorites/FavoritesView';
-import { QuickRevisionView } from './components/revision/QuickRevisionView';
 import { ManageView } from './components/manage/ManageView';
 import { storageService } from './services/storageService';
 import { useTheme } from './hooks/useTheme';
@@ -86,10 +84,8 @@ export default function App() {
   // Parse current route
   // Examples:
   // '' or 'dashboard' -> Dashboard
-  // 'quick-revision' -> Quick Revision
   // 'interview' -> Interview Mode
   // 'interview/:subjectId' -> Interview Mode for subject
-  // 'favorites' -> Favorites
   // 'manage' -> Data management
   // 'tags/:tag' -> Tag view
   // 'subjects/:subjectSlug' -> Subject view
@@ -108,8 +104,8 @@ export default function App() {
 
   if (routeParts.length === 0 || routeParts[0] === 'dashboard') {
     activeView = 'dashboard';
-  } else if (routeParts[0] === 'favorites' || routeParts[0] === 'quick-revision' || routeParts[0] === 'manage') {
-    activeView = routeParts[0];
+  } else if (routeParts[0] === 'manage') {
+    activeView = isUnlocked ? 'manage' : 'dashboard';
   } else if (routeParts[0] === 'interview') {
     activeView = 'interview';
     interviewSubjectId = routeParts[1];
@@ -156,10 +152,6 @@ export default function App() {
       document.title = `${activeSubject.name} — Engineering Knowledge Hub`;
     } else if (activeView === 'interview') {
       document.title = `Interview Rehearsal Mode — Engineering Knowledge Hub`;
-    } else if (activeView === 'favorites') {
-      document.title = `Favorites — Engineering Knowledge Hub`;
-    } else if (activeView === 'quick-revision') {
-      document.title = `Quick Revision — Engineering Knowledge Hub`;
     } else if (activeView === 'manage') {
       document.title = `Data Management — Engineering Knowledge Hub`;
     } else {
@@ -333,12 +325,6 @@ export default function App() {
               onOpenTopic={handleSelectTopicFromSidebar}
               subjects={subjects}
             />
-          )}
-
-          {activeView === 'favorites' && <FavoritesView onOpenTopic={handleSelectTopicFromSidebar} />}
-
-          {activeView === 'quick-revision' && (
-            <QuickRevisionView subjects={subjects} onOpenTopic={handleSelectTopicFromSidebar} />
           )}
 
           {activeView === 'manage' && (

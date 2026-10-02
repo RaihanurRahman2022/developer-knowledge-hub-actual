@@ -14,8 +14,6 @@ import {
   ChevronDown,
   Lock,
   Unlock,
-  Star,
-  Zap,
   HardDrive,
 } from 'lucide-react';
 import { ThemeMode } from '../../hooks/useTheme';
@@ -211,45 +209,25 @@ export const Navbar: React.FC<NavbarProps> = ({
             </div>
           )}
 
-          {/* Quick Revision & Favorites Links */}
-          {(
-            [
-              { view: 'quick-revision', label: 'Quick Revision', Icon: Zap },
-              { view: 'favorites', label: 'Favorites', Icon: Star },
-            ] as const
-          ).map(({ view, label, Icon }) => (
+          {/* Data Management & Sync Status - ONLY VISIBLE WHEN UNLOCKED */}
+          {isUnlocked && (
             <button
-              key={view}
-              onClick={() => onNavigate(view)}
-              className={`flex items-center gap-1 px-2 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer ${
-                activeView === view
+              onClick={() => onNavigate('manage')}
+              className={`relative p-1.5 rounded-lg transition-colors cursor-pointer ${
+                activeView === 'manage'
                   ? 'bg-indigo-100 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300'
-                  : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
+                  : 'text-slate-500 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
               }`}
-              title={label}
+              title={syncStatus ? `Data management — ${syncStatus.message || syncStatus.state}` : 'Data management'}
             >
-              <Icon className="w-3.5 h-3.5 text-indigo-500" />
-              <span className="hidden xl:inline">{label}</span>
+              <HardDrive className="w-4 h-4" />
+              {syncStatus && (
+                <span
+                  className={`absolute top-1 right-1 w-2 h-2 rounded-full ring-2 ring-white dark:ring-slate-900 ${SYNC_DOT_CLASS[syncStatus.state]}`}
+                />
+              )}
             </button>
-          ))}
-
-          {/* Data Management & Sync Status */}
-          <button
-            onClick={() => onNavigate('manage')}
-            className={`relative p-1.5 rounded-lg transition-colors cursor-pointer ${
-              activeView === 'manage'
-                ? 'bg-indigo-100 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300'
-                : 'text-slate-500 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
-            }`}
-            title={syncStatus ? `Data management — ${syncStatus.message || syncStatus.state}` : 'Data management'}
-          >
-            <HardDrive className="w-4 h-4" />
-            {syncStatus && (
-              <span
-                className={`absolute top-1 right-1 w-2 h-2 rounded-full ring-2 ring-white dark:ring-slate-900 ${SYNC_DOT_CLASS[syncStatus.state]}`}
-              />
-            )}
-          </button>
+          )}
 
           {/* Interview Mode Link */}
           <button

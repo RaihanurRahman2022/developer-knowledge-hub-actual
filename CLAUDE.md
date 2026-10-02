@@ -39,8 +39,8 @@ A client-only React 19 + Vite + Tailwind v4 SPA. It is a personal study and inte
 - `articleTemplate.ts` holds `ARTICLE_MARKDOWN_TEMPLATE` and `getAgentPrompt()`, the canonical numbered-section structure for new articles. New article content should follow it so the parser renders it correctly.
 
 ### Routing and views (`src/App.tsx`)
-- Hash routing is parsed by hand in `App.tsx`. The routes are `#/` (dashboard), `#/interview[/:subjectId]`, `#/tags/:tag`, `#/subjects/:subjectSlug`, `#/subjects/:subject/:section/:topicSlug`, and a bare `#/:topicSlugOrId`. It also handles `#/favorites`, `#/quick-revision` and `#/manage` (sync status, export/import). Any route that is not recognized falls back to the dashboard.
-- `components/topic/TopicView.tsx` (~2.1k lines) renders and edits topics. Markdown is rendered with `marked` + DOMPurify (`common/MarkdownRenderer.tsx`) and Prism (`topic/CodeBlock.tsx`).
+- Hash routing is parsed by hand in `App.tsx`. The routes are `#/` (dashboard), `#/interview[/:subjectId]`, `#/tags/:tag`, `#/subjects/:subjectSlug`, `#/subjects/:subject/:section/:topicSlug`, and a bare `#/:topicSlugOrId`. `#/manage` (sync status, export/import) is only routed and linked in the navbar when signed in. Any route that is not recognized falls back to the dashboard.
+- `components/topic/TopicView.tsx` (~2.1k lines) renders and edits topics. `topic/ArticleListener.tsx` is the "Listen" player: browser Web Speech API (no backend), it turns the resolved `articleSections` into sentence chunks (code blocks skipped) and implements pause as cancel-and-resume-at-chunk because native `pause()` is unreliable. Markdown is rendered with `marked` + DOMPurify (`common/MarkdownRenderer.tsx`) and Prism (`topic/CodeBlock.tsx`).
 
 ### Edit lock
 - "Unlocked" means signed in with Supabase Auth (email/password, `hooks/useAuthLock.ts`). This gates all authoring UI (create, edit, delete, reorder, publish toggle) and is passed down as an `isUnlocked` prop from `App.tsx`. The real enforcement is server-side: RLS allows anyone to read but only the owner's email to write. Topics with `isPublished === false` are visible only when unlocked.

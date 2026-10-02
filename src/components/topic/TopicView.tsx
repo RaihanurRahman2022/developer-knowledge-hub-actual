@@ -43,6 +43,7 @@ import {
 } from '../../types';
 import { storageService } from '../../services/storageService';
 import { CodeBlock } from './CodeBlock';
+import { ArticleListener } from './ArticleListener';
 import { ConfirmModal } from '../common/ConfirmModal';
 import { MarkdownRenderer } from '../common/MarkdownRenderer';
 import { ReplaceArticleMarkdownModal } from '../modals/ReplaceArticleMarkdownModal';
@@ -141,6 +142,7 @@ export const TopicView: React.FC<TopicViewProps> = ({
   const [expandedAccordions, setExpandedAccordions] = useState<Record<string, boolean>>({});
   const [expandedQuestions, setExpandedQuestions] = useState<Record<string, boolean>>({});
   const [copiedLink, setCopiedLink] = useState(false);
+  const [listeningSectionId, setListeningSectionId] = useState<string | undefined>(undefined);
 
   // Scroll position & Reading progress auto-save
   const [readingProgress, setReadingProgress] = useState(0);
@@ -1037,6 +1039,14 @@ export const TopicView: React.FC<TopicViewProps> = ({
           </div>
         </div>
 
+        {/* LISTEN (TEXT-TO-SPEECH) PLAYER */}
+        <ArticleListener
+          key={topic.id}
+          topicTitle={editedTopic.title}
+          sections={articleSections}
+          onActiveSectionChange={setListeningSectionId}
+        />
+
         {/* LIST OF ARTICLE SECTIONS */}
         <div className="space-y-6 sm:space-y-8">
           {articleSections.map((sec, secIdx) => {
@@ -1047,7 +1057,11 @@ export const TopicView: React.FC<TopicViewProps> = ({
               <div
                 key={sec.id || secIdx}
                 id={`art-sec-${sec.id || secIdx}`}
-                className="p-4 sm:p-6 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-2xs group relative transition-all"
+                className={`p-4 sm:p-6 rounded-2xl border bg-white dark:bg-slate-900 shadow-2xs group relative transition-all scroll-mt-36 ${
+                  listeningSectionId === sec.id
+                    ? 'border-indigo-400 dark:border-indigo-500 ring-2 ring-indigo-500/30'
+                    : 'border-slate-200 dark:border-slate-800'
+                }`}
               >
                 {/* Section Header */}
                 <div className="flex items-center justify-between gap-3 pb-3 mb-4 border-b border-slate-100 dark:border-slate-800">

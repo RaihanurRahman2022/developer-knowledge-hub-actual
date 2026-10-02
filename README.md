@@ -68,7 +68,7 @@ The optimized production bundle will be generated in the `dist/` directory.
 1. **Create your login:** Supabase Dashboard → Authentication → Users → **Add user** (email + password). This is the account you use to unlock editor mode.
 2. **Disable sign-ups:** Authentication → Sign In / Providers → turn off **Allow new users to sign up**.
 3. **Create the table and security policies:** open `supabase/setup.sql`, replace `you@example.com` with your login email, and run it in the Supabase SQL Editor.
-4. Start the app, click **Locked** in the navbar and sign in. Any pending data (including newly added built-in curriculum) is saved to Supabase automatically. The cloud icon in the navbar shows sync status; `#/manage` has details and manual push/reload.
+4. Start the app, click **Locked** in the navbar and sign in. Any pending data (including newly added built-in curriculum) is saved to Supabase automatically. Once signed in, the hard-drive icon in the navbar shows sync status and opens `#/manage` for details and manual push/reload.
 
 Everyone can **read** the knowledge base; only your signed-in account can **write** to Supabase. Visitors' study progress stays in their own browser.
 
@@ -108,7 +108,7 @@ Use the `gh-pages` npm package or configure GitHub Actions to deploy the `dist/`
 ## 💾 Universal Backup & Restore Instructions
 
 ### Exporting your Notes
-1. Click the hard drive icon in the navbar (or visit `#/manage`).
+1. Sign in, then click the hard drive icon in the navbar (or visit `#/manage`).
 2. Choose your format:
    - **Download .JSON**: Saves your entire database including progress marks, custom topics, and star states.
    - **Download .MD**: Saves human-readable Markdown notes.
