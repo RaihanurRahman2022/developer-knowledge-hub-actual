@@ -4,7 +4,7 @@ import { supabase } from './supabaseClient';
 
 const STORAGE_KEY = 'eng_knowledge_hub_store_v3';
 const PENDING_SYNC_KEY = 'eng_hub_pending_sync';
-const STORE_VERSION = 8;
+const STORE_VERSION = 9; // 9: compact storage of unmodified seed topics
 
 // Supabase rows (table knowledge_hub_store). Content is large and changes rarely;
 // progress is small and changes on every visit, so they are synced separately.
@@ -36,6 +36,92 @@ function contentOf(store: KnowledgeStore): ContentData {
     topics: store.topics,
     seededIds: store.seededIds,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Compact persistence. Built-in (seed) topics already ship in the JS bundle, so an
+// unmodified seed topic is stored as a stub ({ id, _seed: true }) and re-hydrated
+// from the bundle on load. Without this the store is ~10 MB, which overflows
+// localStorage (~5 MB) and makes every Supabase save slow.
+// ---------------------------------------------------------------------------
+
+interface SeedTopicStub {
+  id: string;
+  _seed: true;
+}
+type StoredTopic = Topic | SeedTopicStub;
+
+const seedTopicById = new Map(initialTopics.map((t) => [t.id, t]));
+const seedFingerprintById = new Map<string, string>();
+const unmodifiedSeedCache = new WeakMap<Topic, boolean>();
+
+/** JSON with sorted keys: Postgres jsonb does not preserve key order. */
+function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map((v) => (v === undefined ? 'null' : stableStringify(v))).join(',')}]`;
+  if (value && typeof value === 'object') {
+    const obj = value as Record<string, unknown>;
+    return `{${Object.keys(obj)
+      .filter((k) => obj[k] !== undefined)
+      .sort()
+      .map((k) => `${JSON.stringify(k)}:${stableStringify(obj[k])}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+/** Topic JSON ignoring key order and generated section/block ids (they differ on every page load). */
+function topicFingerprint(t: Topic): string {
+  return stableStringify({
+    ...t,
+    articleSections: t.articleSections?.map(({ id: _sid, blocks, ...sec }) => ({
+      ...sec,
+      blocks: blocks?.map(({ id: _bid, ...block }) => block),
+    })),
+  });
+}
+
+function isUnmodifiedSeedTopic(t: Topic): boolean {
+  const cached = unmodifiedSeedCache.get(t);
+  if (cached !== undefined) return cached;
+  const seed = seedTopicById.get(t.id);
+  let result = false;
+  if (seed) {
+    if (seed === t) {
+      result = true;
+    } else {
+      let seedPrint = seedFingerprintById.get(t.id);
+      if (seedPrint === undefined) {
+        seedPrint = topicFingerprint(seed);
+        seedFingerprintById.set(t.id, seedPrint);
+      }
+      result = topicFingerprint(t) === seedPrint;
+    }
+  }
+  unmodifiedSeedCache.set(t, result);
+  return result;
+}
+
+function compactTopics(topics: Topic[]): StoredTopic[] {
+  return topics.map((t) => (isUnmodifiedSeedTopic(t) ? { id: t.id, _seed: true } : t));
+}
+
+/** Replaces stubs with the bundled seed topic; drops stubs whose seed topic no longer exists. */
+function hydrateTopics(topics: StoredTopic[] | undefined): Topic[] {
+  if (!Array.isArray(topics)) return [];
+  const result: Topic[] = [];
+  for (const t of topics) {
+    if ((t as SeedTopicStub)._seed) {
+      const seed = seedTopicById.get(t.id);
+      if (seed) result.push(seed);
+    } else {
+      result.push(t as Topic);
+    }
+  }
+  return result;
+}
+
+function serializeContent(store: KnowledgeStore) {
+  return { ...contentOf(store), topics: compactTopics(store.topics) };
 }
 
 function progressOf(store: KnowledgeStore): ProgressData {
@@ -94,7 +180,7 @@ function mergeSeedContent(input: KnowledgeStore): { store: KnowledgeStore; chang
     const existing = new Set(target.map((item) => item.id));
     for (const item of seedItems) {
       if (!existing.has(item.id) && !seeded.has(item.id)) {
-        target.push({ ...item });
+        target.push(item);
         changed = true;
       }
     }
@@ -126,6 +212,7 @@ export class StorageService {
   private listeners: Set<() => void> = new Set();
 
   private signedIn = false;
+  private localCacheBroken = false;
   private pending: Record<SyncPart, boolean>;
   private changeCounter: Record<SyncPart, number> = { content: 0, progress: 0 };
   private pushTimer: ReturnType<typeof setTimeout> | undefined;
@@ -161,7 +248,8 @@ export class StorageService {
     try {
       const serialized = localStorage.getItem(STORAGE_KEY);
       if (serialized) {
-        const parsed = JSON.parse(serialized) as KnowledgeStore;
+        const raw = JSON.parse(serialized);
+        const parsed = raw ? ({ ...raw, topics: hydrateTopics(raw.topics) } as KnowledgeStore) : raw;
         if (parsed && Array.isArray(parsed.subjects) && Array.isArray(parsed.topics)) {
           const { store, changed } = mergeSeedContent(parsed);
           if (changed) {
@@ -182,9 +270,17 @@ export class StorageService {
 
   private writeLocal(store: KnowledgeStore): void {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...store, topics: compactTopics(store.topics) }));
     } catch (e) {
       console.error('Failed to save to localStorage:', e);
+      // A stale cached copy must never win over the cloud on the next load.
+      this.localCacheBroken = true;
+      try {
+        localStorage.removeItem(STORAGE_KEY);
+      } catch {
+        // ignore
+      }
+      this.persistPendingFlags();
     }
   }
 
@@ -209,7 +305,8 @@ export class StorageService {
 
   private persistPendingFlags(): void {
     try {
-      localStorage.setItem(PENDING_SYNC_KEY, JSON.stringify(this.pending));
+      const flags = this.localCacheBroken ? { ...this.pending, content: false } : this.pending;
+      localStorage.setItem(PENDING_SYNC_KEY, JSON.stringify(flags));
     } catch {
       // ignore
     }
@@ -259,6 +356,20 @@ export class StorageService {
       }
     });
 
+    // Don't lose edits that are still waiting for the debounce when the tab is hidden or closed.
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden' && this.signedIn && (this.pending.content || this.pending.progress)) {
+        clearTimeout(this.pushTimer);
+        void this.flushPush();
+      }
+    });
+    window.addEventListener('beforeunload', (e) => {
+      if (this.signedIn && (this.pending.content || this.pushInFlight)) {
+        e.preventDefault();
+        e.returnValue = '';
+      }
+    });
+
     await this.pullFromCloud();
   }
 
@@ -291,7 +402,7 @@ export class StorageService {
 
     // Only the signed-in owner can push content, so visitors always follow the cloud copy.
     if (contentRow && Array.isArray(contentRow.subjects) && (!this.pending.content || !this.signedIn)) {
-      next = { ...next, ...contentOf(contentRow as KnowledgeStore) };
+      next = { ...next, ...contentOf(contentRow as KnowledgeStore), topics: hydrateTopics(contentRow.topics as StoredTopic[]) };
       this.pending.content = false;
       this.persistPendingFlags();
     } else if (!contentRow) {
@@ -342,7 +453,7 @@ export class StorageService {
       for (const part of ['content', 'progress'] as SyncPart[]) {
         if (!this.pending[part]) continue;
         const counterAtStart = this.changeCounter[part];
-        const payload = part === 'content' ? contentOf(this.store) : progressOf(this.store);
+        const payload = part === 'content' ? serializeContent(this.store) : progressOf(this.store);
         const { error } = await supabase.from('knowledge_hub_store').upsert({
           id: part === 'content' ? CONTENT_ROW_ID : PROGRESS_ROW_ID,
           data: payload,

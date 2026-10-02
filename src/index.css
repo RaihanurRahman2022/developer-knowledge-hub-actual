@@ -352,20 +352,33 @@
    Article listener (src/components/topic/ArticleListener.tsx)
    --------------------------------------------------------------------------- */
 
-/* Read-along highlights (CSS Custom Highlight API) */
+/* Read-along: sentence tint (CSS Custom Highlight API) */
 ::highlight(tts-sentence) {
-  background-color: rgb(99 102 241 / 0.12);
-}
-::highlight(tts-word) {
-  background-color: rgb(250 204 21 / 0.65);
-  color: #0f172a;
+  background-color: rgb(99 102 241 / 0.14);
 }
 .dark ::highlight(tts-sentence) {
-  background-color: rgb(129 140 248 / 0.2);
+  background-color: rgb(129 140 248 / 0.22);
 }
-.dark ::highlight(tts-word) {
-  background-color: rgb(250 204 21 / 0.9);
-  color: #0f172a;
+
+/* Read-along: gliding word marker, positioned by ArticleListener in document coordinates */
+.tts-word-marker {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 30;
+  pointer-events: none;
+  opacity: 0;
+  border-radius: 6px;
+  background: rgb(250 204 21 / 0.45);
+  box-shadow: 0 0 0 1px rgb(234 179 8 / 0.35), 0 2px 10px rgb(234 179 8 / 0.25);
+  mix-blend-mode: multiply;
+  transition: transform 0.16s cubic-bezier(0.25, 0.8, 0.25, 1), width 0.16s ease-out, height 0.16s ease-out, opacity 0.2s ease;
+  will-change: transform, width;
+}
+.dark .tts-word-marker {
+  background: rgb(250 204 21 / 0.28);
+  box-shadow: 0 0 0 1px rgb(250 204 21 / 0.5), 0 0 14px rgb(250 204 21 / 0.25);
+  mix-blend-mode: screen;
 }
 
 /* Equalizer bars */
@@ -430,5 +443,8 @@
   .tts-enter,
   .tts-pulse {
     animation: none;
+  }
+  .tts-word-marker {
+    transition: opacity 0.2s ease;
   }
 }

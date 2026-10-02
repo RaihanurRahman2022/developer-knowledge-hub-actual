@@ -22,7 +22,7 @@ const VOICE_KEY = 'eng_hub_tts_voice';
 const FOLLOW_KEY = 'eng_hub_tts_follow';
 const RATES = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
 const MAX_CHUNK_LENGTH = 220; // long utterances get cut off in some browsers
-const WORDS_PER_SECOND = 2.6; // at 1×, used to estimate position when the voice sends no word events
+const WORDS_PER_SECOND = 2.6; // at 1×, used for time estimates
 const USER_SCROLL_PAUSE_MS = 6000;
 
 const isSupported = typeof window !== 'undefined' && 'speechSynthesis' in window;
@@ -160,6 +160,16 @@ function writeStored(key: string, value: string): void {
   }
 }
 
+/**
+ * Default voice when the user has not picked one: prefer voices that report word
+ * positions (Edge "Natural" voices, then locally installed voices). Chrome's online
+ * "Google" voices speak well but send no word events, so read-along can't follow them.
+ */
+function pickDefaultVoice(voices: SpeechSynthesisVoice[]): SpeechSynthesisVoice | undefined {
+  const english = voices.filter((v) => v.lang.toLowerCase().startsWith('en'));
+  return english.find((v) => /natural/i.test(v.name)) ?? english.find((v) => v.localService) ?? english[0];
+}
+
 function formatDuration(seconds: number): string {
   const s = Math.max(0, Math.round(seconds));
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
@@ -283,9 +293,12 @@ export const ArticleListener: React.FC<ArticleListenerProps> = ({ topicTitle, se
 
   const alignmentRef = useRef<SectionAlignment | null>(null);
   const lastWordRef = useRef<{ chunk: number; word: number; range: Range | null }>({ chunk: -1, word: -1, range: null });
-  const boundaryWorksRef = useRef(false); // voice reports word positions, so no need to estimate
+  const markerRef = useRef<HTMLDivElement | null>(null);
   const userScrollUntilRef = useRef(0);
-  const estimateTimerRef = useRef<number | undefined>(undefined);
+  const lastAutoScrollRef = useRef(0);
+  // null = not known yet, false = the voice sends no word events (sentence highlight only).
+  const [wordTracking, setWordTracking] = useState<boolean | null>(null);
+  const wordTrackingRef = useRef<boolean | null>(null);
 
   useEffect(() => {
     if (!isSupported) return;
@@ -300,18 +313,46 @@ export const ArticleListener: React.FC<ArticleListenerProps> = ({ topicTitle, se
     if (alignmentRef.current) alignmentRef.current.dirty = true;
   }, [chunks]);
 
+  /** Moves the gliding word marker onto a range (hides it for null). */
+  const placeMarker = useCallback((range: Range | null) => {
+    const el = markerRef.current;
+    if (!el) return;
+    const rect = range?.getClientRects()[0];
+    if (!rect || !rect.width) {
+      el.style.opacity = '0';
+      el.dataset.visible = '';
+      return;
+    }
+    const x = rect.left + window.scrollX - 3;
+    const y = rect.top + window.scrollY - 2;
+    // Glide between neighbouring words; jump (no transition) when appearing or changing line.
+    const prevY = parseFloat(el.dataset.y || 'NaN');
+    const jump = el.dataset.visible !== '1' || !(Math.abs(prevY - y) <= rect.height * 1.5);
+    if (jump) el.style.transition = 'none';
+    el.style.width = `${rect.width + 6}px`;
+    el.style.height = `${rect.height + 4}px`;
+    el.style.transform = `translate(${x}px, ${y}px)`;
+    el.style.opacity = '1';
+    el.dataset.visible = '1';
+    el.dataset.y = String(y);
+    if (jump) {
+      void el.offsetWidth; // apply the jump before re-enabling the transition
+      el.style.transition = '';
+    }
+  }, []);
+
   const resetHighlights = useCallback(() => {
-    setHighlight('tts-word', null);
     setHighlight('tts-sentence', null);
+    placeMarker(null);
     alignmentRef.current?.observer.disconnect();
     alignmentRef.current = null;
     lastWordRef.current = { chunk: -1, word: -1, range: null };
-  }, []);
+  }, [placeMarker]);
 
   const getAlignment = useCallback((chunkIndex: number): ChunkAlignment | undefined => {
     const { chunks: list, sections: secs } = settingsRef.current;
     const chunk = list[chunkIndex];
-    if (!chunk || !hasHighlightApi) return undefined;
+    if (!chunk) return undefined;
     const sectionId = secs[chunk.sectionIndex]?.id;
     const root = sectionId ? document.getElementById(`art-sec-${sectionId}`) : null;
     if (!root) return undefined;
@@ -330,12 +371,15 @@ export const ArticleListener: React.FC<ArticleListenerProps> = ({ topicTitle, se
     return a.map.get(chunkIndex);
   }, []);
 
+  /** Scrolls so the target sits ~30% from the top, at most once per smooth-scroll animation. */
   const followTarget = useCallback((target: Range | HTMLElement, force = false) => {
     if (!force && (!settingsRef.current.follow || Date.now() < userScrollUntilRef.current)) return;
+    if (!force && Date.now() - lastAutoScrollRef.current < 900) return;
     const rect = target.getBoundingClientRect();
     if (!rect.height) return; // hidden (e.g. collapsed)
-    if (force || rect.top < 120 || rect.bottom > window.innerHeight - 210) {
-      window.scrollTo({ top: window.scrollY + rect.top - window.innerHeight * 0.35, behavior: 'smooth' });
+    if (force || rect.top < 110 || rect.bottom > window.innerHeight - 220) {
+      lastAutoScrollRef.current = Date.now();
+      window.scrollTo({ top: window.scrollY + rect.top - window.innerHeight * 0.3, behavior: 'smooth' });
     }
   }, []);
 
@@ -349,11 +393,11 @@ export const ArticleListener: React.FC<ArticleListenerProps> = ({ topicTitle, se
       const range = getAlignment(chunkIndex)?.ranges[wordIndex] ?? null;
       lastWordRef.current = { chunk: chunkIndex, word: wordIndex, range: range ?? last.range };
       if (range) {
-        setHighlight('tts-word', range);
-        followTarget(range);
+        placeMarker(range);
+        followTarget(range); // long sentences that run off the bottom
       }
     },
-    [getAlignment, followTarget]
+    [getAlignment, followTarget, placeMarker]
   );
 
   const startChunkHighlight = useCallback(
@@ -361,21 +405,25 @@ export const ArticleListener: React.FC<ArticleListenerProps> = ({ topicTitle, se
       const { chunks: list, sections: secs } = settingsRef.current;
       const alignment = getAlignment(chunkIndex);
       setHighlight('tts-sentence', alignment?.sentence ?? null);
-      if (!alignment?.ranges.some(Boolean)) setHighlight('tts-word', null);
+      lastWordRef.current = { chunk: chunkIndex, word: -1, range: null };
 
-      // Nothing on the page matches (e.g. spoken-only text): at least keep its section in view.
-      const isSectionStart = chunkIndex === 0 || list[chunkIndex - 1]?.sectionIndex !== list[chunkIndex]?.sectionIndex;
-      if (!alignment?.sentence && isSectionStart) {
+      if (alignment?.sentence) {
+        followTarget(alignment.sentence);
+      } else {
+        // Nothing on the page matches (spoken-only text): at least keep its section in view.
+        const isSectionStart = chunkIndex === 0 || list[chunkIndex - 1]?.sectionIndex !== list[chunkIndex]?.sectionIndex;
         const el = document.getElementById(`art-sec-${secs[list[chunkIndex]?.sectionIndex]?.id}`);
-        if (el) followTarget(el);
+        if (isSectionStart && el) followTarget(el);
       }
-      showWord(chunkIndex, 0);
+
+      // Park the marker on the first matched word until the voice reports positions.
+      const first = alignment?.ranges.find(Boolean) ?? null;
+      placeMarker(wordTrackingRef.current === false ? null : first);
     },
-    [getAlignment, followTarget, showWord]
+    [getAlignment, followTarget, placeMarker]
   );
 
   const finish = useCallback(() => {
-    window.clearInterval(estimateTimerRef.current);
     setState('idle');
     setIndex(0);
     setWordFraction(0);
@@ -392,7 +440,6 @@ export const ArticleListener: React.FC<ArticleListenerProps> = ({ topicTitle, se
       const speakChunk = (i: number) => {
         const { chunks: list, rate: r, voiceURI: uri, voices: vs } = settingsRef.current;
         if (token !== tokenRef.current) return;
-        window.clearInterval(estimateTimerRef.current);
         if (i >= list.length) {
           finish();
           return;
@@ -405,7 +452,7 @@ export const ArticleListener: React.FC<ArticleListenerProps> = ({ topicTitle, se
         const tokens = tokenize(text);
         const utterance = new SpeechSynthesisUtterance(text);
         utterance.rate = r;
-        const voice = vs.find((v) => v.voiceURI === uri);
+        const voice = vs.find((v) => v.voiceURI === uri) ?? pickDefaultVoice(vs);
         if (voice) {
           utterance.voice = voice;
           utterance.lang = voice.lang;
@@ -414,27 +461,24 @@ export const ArticleListener: React.FC<ArticleListenerProps> = ({ topicTitle, se
         let gotBoundary = false;
         utterance.onboundary = (e) => {
           if (token !== tokenRef.current || (e.name && e.name !== 'word')) return;
+          if (wordTrackingRef.current !== true) {
+            wordTrackingRef.current = true;
+            setWordTracking(true);
+          }
           gotBoundary = true;
-          boundaryWorksRef.current = true;
-          window.clearInterval(estimateTimerRef.current);
           let w = 0;
           while (w + 1 < tokens.length && tokens[w + 1].start <= e.charIndex) w++;
           showWord(i, w);
         };
-        // Some voices (e.g. Chrome's online Google voices) never report word positions: estimate from elapsed time.
-        utterance.onstart = () => {
-          if (token !== tokenRef.current || boundaryWorksRef.current) return;
-          const startedAt = performance.now();
-          estimateTimerRef.current = window.setInterval(() => {
-            if (gotBoundary || token !== tokenRef.current) {
-              window.clearInterval(estimateTimerRef.current);
-              return;
-            }
-            const elapsed = (performance.now() - startedAt) / 1000;
-            showWord(i, Math.min(tokens.length - 1, Math.floor(elapsed * WORDS_PER_SECOND * r)));
-          }, 150);
+        utterance.onend = () => {
+          // A short utterance may end before any event arrives; only judge longer ones.
+          if (!gotBoundary && tokens.length >= 4 && wordTrackingRef.current === null) {
+            wordTrackingRef.current = false;
+            setWordTracking(false);
+            placeMarker(null);
+          }
+          speakChunk(i + 1);
         };
-        utterance.onend = () => speakChunk(i + 1);
         utterance.onerror = (e) => {
           if (e.error === 'interrupted' || e.error === 'canceled') return;
           speakChunk(i + 1);
@@ -445,7 +489,7 @@ export const ArticleListener: React.FC<ArticleListenerProps> = ({ topicTitle, se
       setState('playing');
       speakChunk(start);
     },
-    [finish, startChunkHighlight, showWord]
+    [finish, startChunkHighlight, showWord, placeMarker]
   );
 
   const stop = useCallback(() => {
@@ -457,7 +501,6 @@ export const ArticleListener: React.FC<ArticleListenerProps> = ({ topicTitle, se
   // Pause is cancel + remember position: native pause() is unreliable on mobile and Chrome.
   const pause = useCallback(() => {
     tokenRef.current++;
-    window.clearInterval(estimateTimerRef.current);
     window.speechSynthesis.cancel();
     setState('paused');
   }, []);
@@ -466,7 +509,6 @@ export const ArticleListener: React.FC<ArticleListenerProps> = ({ topicTitle, se
   useEffect(
     () => () => {
       tokenRef.current++;
-      window.clearInterval(estimateTimerRef.current);
       if (isSupported) window.speechSynthesis.cancel();
       resetHighlights();
     },
@@ -496,6 +538,14 @@ export const ArticleListener: React.FC<ArticleListenerProps> = ({ topicTitle, se
       document.body.style.paddingBottom = '';
     };
   }, [isActive]);
+
+  // Keep the word marker on its word when the layout changes size.
+  useEffect(() => {
+    if (!isActive) return;
+    const onResize = () => placeMarker(lastWordRef.current.range);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, [isActive, placeMarker]);
 
   const currentSection = chunks[index]?.sectionIndex ?? 0;
   const activeSectionId = isActive ? sections[currentSection]?.id : undefined;
@@ -539,7 +589,9 @@ export const ArticleListener: React.FC<ArticleListenerProps> = ({ topicTitle, se
     setVoiceURI(uri);
     writeStored(VOICE_KEY, uri);
     settingsRef.current.voiceURI = uri;
-    boundaryWorksRef.current = false; // the new voice may not report word positions
+    // The new voice may not report word positions; detect again.
+    wordTrackingRef.current = null;
+    setWordTracking(null);
     if (state === 'playing') speakFrom(index);
   };
 
@@ -661,7 +713,7 @@ export const ArticleListener: React.FC<ArticleListenerProps> = ({ topicTitle, se
                     className="bg-transparent text-xs text-slate-700 dark:text-slate-200 py-1 pr-1 max-w-[150px] sm:max-w-[220px] focus:outline-hidden cursor-pointer"
                     title="Voice"
                   >
-                    <option value="">Default voice</option>
+                    <option value="">Auto (best for highlighting)</option>
                     {voiceOptions.map((v) => (
                       <option key={v.voiceURI} value={v.voiceURI}>
                         {v.name}
@@ -685,6 +737,13 @@ export const ArticleListener: React.FC<ArticleListenerProps> = ({ topicTitle, se
                 <span>Follow</span>
               </button>
             </div>
+
+            {wordTracking === false && (
+              <p className="mt-1.5 text-[11px] text-amber-700 dark:text-amber-400">
+                This voice doesn't report word positions, so only the sentence is highlighted. Pick a Microsoft or
+                &ldquo;Natural&rdquo; voice (or Auto) for word-by-word highlighting.
+              </p>
+            )}
           </div>
         </div>
       </div>
@@ -722,7 +781,14 @@ export const ArticleListener: React.FC<ArticleListenerProps> = ({ topicTitle, se
         </div>
       </div>
 
-      {isActive && createPortal(player, document.body)}
+      {isActive &&
+        createPortal(
+          <>
+            <div ref={markerRef} className="tts-word-marker" aria-hidden="true" />
+            {player}
+          </>,
+          document.body
+        )}
     </>
   );
 };

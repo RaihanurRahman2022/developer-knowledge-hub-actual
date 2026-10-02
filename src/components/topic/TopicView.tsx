@@ -282,9 +282,14 @@ export const TopicView: React.FC<TopicViewProps> = ({
     }
   }, [listeningSectionId]);
 
-  // Sync editedTopic when prop changes
+  // Keep editedTopic in sync with the store, e.g. when newer data arrives from Supabase
+  // after the page has rendered. Our own saves put the same object in the store, so this is a no-op for them.
   useEffect(() => {
     setEditedTopic(topic);
+  }, [topic]);
+
+  // Reset editing UI when switching topics
+  useEffect(() => {
     setIsAddSectionModalOpen(false);
     setActiveAddBlockSectionId(null);
     setEditingBlockId(null);
