@@ -170,6 +170,17 @@ function pickDefaultVoice(voices: SpeechSynthesisVoice[]): SpeechSynthesisVoice 
   return english.find((v) => /natural/i.test(v.name)) ?? english.find((v) => v.localService) ?? english[0];
 }
 
+/**
+ * SpeechSynthesisEvent.elapsedTime is seconds per spec but milliseconds in some browsers.
+ * Pick the unit that best matches a rough estimate (~14 characters per second at 1×).
+ */
+function boundaryElapsedMs(e: SpeechSynthesisEvent, rate: number): number {
+  const t = e.elapsedTime || 0;
+  if (t <= 0) return 0;
+  const estimateSec = e.charIndex / (14 * rate);
+  return Math.abs(t - estimateSec) <= Math.abs(t / 1000 - estimateSec) ? t * 1000 : t;
+}
+
 function formatDuration(seconds: number): string {
   const s = Math.max(0, Math.round(seconds));
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
@@ -201,7 +212,8 @@ interface SectionAlignment {
 }
 
 const SKIP_SELECTOR = 'pre, button, svg, script, style, textarea, input, select, [data-tts-skip]';
-const MATCH_WINDOW = 30; // how far ahead a spoken word may be searched for in the page text
+const MATCH_WINDOW = 30; // greedy fallback: how far ahead a spoken word may be searched for
+const MAX_LCS_CELLS = 6_000_000; // spoken × page words; above this use the greedy fallback
 
 const normalizeWord = (w: string) => w.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
 
@@ -228,35 +240,96 @@ function collectDomWords(root: HTMLElement): { norm: string; range: Range }[] {
   return words;
 }
 
+/** Greedy fallback for very large sections: match each word within a small look-ahead window. */
+function greedyAlign(spoken: string[], page: string[]): Int32Array {
+  const result = new Int32Array(spoken.length).fill(-1);
+  let cursor = 0;
+  spoken.forEach((word, i) => {
+    const end = Math.min(page.length, cursor + MATCH_WINDOW);
+    for (let j = cursor; j < end; j++) {
+      if (page[j] === word) {
+        result[i] = j;
+        cursor = j + 1;
+        return;
+      }
+    }
+  });
+  return result;
+}
+
+/**
+ * Longest-common-subsequence alignment of spoken words to page words. Unlike a greedy
+ * search it never lets a common word ("the", "a") latch onto a later occurrence and
+ * drag the highlight ahead of the voice. Returns the page index per spoken word, or -1.
+ */
+export function alignWords(spoken: string[], page: string[]): Int32Array {
+  const n = spoken.length;
+  const m = page.length;
+  if (n === 0 || m === 0) return new Int32Array(n).fill(-1);
+  if (n * m > MAX_LCS_CELLS) return greedyAlign(spoken, page);
+
+  // Intern words so the inner loop compares integers.
+  const ids = new Map<string, number>();
+  const intern = (w: string) => ids.get(w) ?? (ids.set(w, ids.size), ids.size - 1);
+  const a = Int32Array.from(spoken, intern);
+  const b = Int32Array.from(page, intern);
+
+  // dp[i][j] = LCS length of a[i..] and b[j..], filled from the end so traceback runs forwards.
+  const w = m + 1;
+  const dp = new Uint16Array((n + 1) * w);
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      dp[i * w + j] = a[i] === b[j] ? dp[(i + 1) * w + j + 1] + 1 : Math.max(dp[(i + 1) * w + j], dp[i * w + j + 1]);
+    }
+  }
+
+  const result = new Int32Array(n).fill(-1);
+  let i = 0;
+  let j = 0;
+  while (i < n && j < m) {
+    if (a[i] === b[j]) {
+      result[i++] = j++;
+    } else if (dp[(i + 1) * w + j] >= dp[i * w + j + 1]) {
+      i++; // spoken-only word ("Question:", "Code example.")
+    } else {
+      j++; // page-only word (skipped code, UI labels)
+    }
+  }
+  return result;
+}
+
 /** Aligns every chunk of one section to that section's rendered words, in reading order. */
 function alignSection(root: HTMLElement, chunks: SpeechChunk[], sectionIndex: number): Map<number, ChunkAlignment> {
   const dom = collectDomWords(root);
   const result = new Map<number, ChunkAlignment>();
-  let cursor = 0;
+  const spoken: { chunkIndex: number; tokenIndex: number; norm: string }[] = [];
+
   chunks.forEach((chunk, chunkIndex) => {
     if (chunk.sectionIndex !== sectionIndex) return;
     const tokens = tokenize(chunk.text);
-    const ranges = tokens.map((t) => {
-      if (!t.norm) return null;
-      const end = Math.min(dom.length, cursor + MATCH_WINDOW);
-      for (let j = cursor; j < end; j++) {
-        if (dom[j].norm === t.norm) {
-          cursor = j + 1;
-          return dom[j].range;
-        }
-      }
-      return null; // spoken-only words such as "Question:" or "Code example."
+    result.set(chunkIndex, { tokens, ranges: tokens.map(() => null), sentence: null });
+    tokens.forEach((t, tokenIndex) => {
+      if (t.norm) spoken.push({ chunkIndex, tokenIndex, norm: t.norm });
     });
-    const matched = ranges.filter((r): r is Range => r !== null);
-    let sentence: Range | null = null;
-    if (matched.length > 0) {
-      const last = matched[matched.length - 1];
-      sentence = document.createRange();
-      sentence.setStart(matched[0].startContainer, matched[0].startOffset);
-      sentence.setEnd(last.endContainer, last.endOffset);
-    }
-    result.set(chunkIndex, { tokens, ranges, sentence });
   });
+
+  const match = alignWords(
+    spoken.map((s) => s.norm),
+    dom.map((d) => d.norm)
+  );
+  spoken.forEach((s, k) => {
+    if (match[k] >= 0) result.get(s.chunkIndex)!.ranges[s.tokenIndex] = dom[match[k]].range;
+  });
+
+  for (const alignment of result.values()) {
+    const matched = alignment.ranges.filter((r): r is Range => r !== null);
+    if (matched.length === 0) continue;
+    const last = matched[matched.length - 1];
+    const sentence = document.createRange();
+    sentence.setStart(matched[0].startContainer, matched[0].startOffset);
+    sentence.setEnd(last.endContainer, last.endOffset);
+    alignment.sentence = sentence;
+  }
   return result;
 }
 
@@ -296,6 +369,11 @@ export const ArticleListener: React.FC<ArticleListenerProps> = ({ topicTitle, se
   const markerRef = useRef<HTMLDivElement | null>(null);
   const userScrollUntilRef = useRef(0);
   const lastAutoScrollRef = useRef(0);
+  const wordTimersRef = useRef<number[]>([]);
+  const clearWordTimers = useCallback(() => {
+    wordTimersRef.current.forEach((t) => window.clearTimeout(t));
+    wordTimersRef.current = [];
+  }, []);
   // null = not known yet, false = the voice sends no word events (sentence highlight only).
   const [wordTracking, setWordTracking] = useState<boolean | null>(null);
   const wordTrackingRef = useRef<boolean | null>(null);
@@ -424,17 +502,19 @@ export const ArticleListener: React.FC<ArticleListenerProps> = ({ topicTitle, se
   );
 
   const finish = useCallback(() => {
+    clearWordTimers();
     setState('idle');
     setIndex(0);
     setWordFraction(0);
     resetHighlights();
-  }, [resetHighlights]);
+  }, [resetHighlights, clearWordTimers]);
 
   const speakFrom = useCallback(
     (start: number) => {
       if (!isSupported) return;
       const synth = window.speechSynthesis;
       const token = ++tokenRef.current;
+      clearWordTimers();
       synth.cancel();
 
       const speakChunk = (i: number) => {
@@ -445,6 +525,7 @@ export const ArticleListener: React.FC<ArticleListenerProps> = ({ topicTitle, se
           return;
         }
 
+        clearWordTimers();
         setIndex(i);
         startChunkHighlight(i);
 
@@ -459,6 +540,27 @@ export const ArticleListener: React.FC<ArticleListenerProps> = ({ topicTitle, se
         }
 
         let gotBoundary = false;
+        // Audio clock for this utterance. Events that arrive before playback starts are
+        // held until onstart so they are timed from when the audio really begins.
+        let startedAt = 0;
+        const early: { word: number; elapsedMs: number }[] = [];
+        const scheduleWord = (word: number, elapsedMs: number) => {
+          const dueMs = startedAt + elapsedMs - performance.now();
+          if (dueMs > 40 && dueMs < 15000) {
+            wordTimersRef.current.push(
+              window.setTimeout(() => {
+                if (token === tokenRef.current) showWord(i, word);
+              }, dueMs)
+            );
+          } else {
+            showWord(i, word);
+          }
+        };
+        utterance.onstart = () => {
+          if (token !== tokenRef.current) return;
+          startedAt = performance.now();
+          early.splice(0).forEach((ev) => scheduleWord(ev.word, ev.elapsedMs));
+        };
         utterance.onboundary = (e) => {
           if (token !== tokenRef.current || (e.name && e.name !== 'word')) return;
           if (wordTrackingRef.current !== true) {
@@ -468,9 +570,16 @@ export const ArticleListener: React.FC<ArticleListenerProps> = ({ topicTitle, se
           gotBoundary = true;
           let w = 0;
           while (w + 1 < tokens.length && tokens[w + 1].start <= e.charIndex) w++;
-          showWord(i, w);
+
+          // Some voices (notably Edge's online "Natural" voices) deliver word events
+          // before the audio reaches them. elapsedTime says when the word is spoken,
+          // so wait for that moment instead of highlighting immediately.
+          const elapsedMs = boundaryElapsedMs(e, r);
+          if (startedAt === 0) early.push({ word: w, elapsedMs });
+          else scheduleWord(w, elapsedMs);
         };
         utterance.onend = () => {
+          clearWordTimers();
           // A short utterance may end before any event arrives; only judge longer ones.
           if (!gotBoundary && tokens.length >= 4 && wordTrackingRef.current === null) {
             wordTrackingRef.current = false;
@@ -489,7 +598,7 @@ export const ArticleListener: React.FC<ArticleListenerProps> = ({ topicTitle, se
       setState('playing');
       speakChunk(start);
     },
-    [finish, startChunkHighlight, showWord, placeMarker]
+    [finish, startChunkHighlight, showWord, placeMarker, clearWordTimers]
   );
 
   const stop = useCallback(() => {
@@ -501,18 +610,20 @@ export const ArticleListener: React.FC<ArticleListenerProps> = ({ topicTitle, se
   // Pause is cancel + remember position: native pause() is unreliable on mobile and Chrome.
   const pause = useCallback(() => {
     tokenRef.current++;
+    clearWordTimers();
     window.speechSynthesis.cancel();
     setState('paused');
-  }, []);
+  }, [clearWordTimers]);
 
   // Stop when leaving the topic.
   useEffect(
     () => () => {
       tokenRef.current++;
+      clearWordTimers();
       if (isSupported) window.speechSynthesis.cancel();
       resetHighlights();
     },
-    [resetHighlights]
+    [resetHighlights, clearWordTimers]
   );
 
   const isActive = state !== 'idle';
