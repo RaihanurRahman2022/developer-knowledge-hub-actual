@@ -1,11 +1,120 @@
-<div align="center">
+# Engineering Knowledge Hub
 
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
+> A high-performance, personal technical knowledge base and interview-preparation encyclopedia for software engineers.
 
-  <h1>Built with AI Studio</h2>
+---
 
-  <p>The fastest path from prompt to production with Gemini.</p>
+## ⚡ Architecture & Design Principles
 
-  <a href="https://aistudio.google.com/apps">Start building</a>
+The **Engineering Knowledge Hub** combines the strengths of **Notion**, **Developer Documentation** (Stripe/Tailwind style), **Personal Wikis**, and an **Interview Rehearsal Engine**.
 
-</div>
+### 1. Hierarchical Information Model
+```
+Subject (e.g. .NET, Go, System Design, SQL)
+  └── Section (e.g. ASP.NET Core, Concurrency, Indexing)
+        └── Topic (e.g. Dependency Injection, Middleware, MVCC)
+              ├── Quick Definition (1-2 clear sentences)
+              ├── 30–60 Second Rapid Revision (Pre-interview cheat sheet)
+              ├── Core Concepts (Detailed architectural mechanics)
+              ├── Syntax Highlighted Code Blocks (with 1-click copy)
+              ├── Callouts (Important, Warning, Tip, Danger)
+              ├── Deep-Dive Accordions (Expandable scenarios)
+              ├── Common Traps & Antipatterns
+              ├── Interview Q&A Flashcards (With "What Interviewers Evaluate")
+              ├── Checklists (Interactive memory items)
+              ├── Official References (Safe external links)
+              └── Related Topics (Internal cross-linking)
+```
+
+### 2. $0 Cost & Universal Portability
+- **$0 Hosting**: Static SPA built with React + Vite + Tailwind CSS.
+- **$0 Database**: Local-first storage in browser `localStorage` with versioned schema and reactive subscribers.
+- **No Database Lock-in**: Full 1-click export to:
+  - **JSON**: Full database and progress backup.
+  - **Markdown**: Formatted notes bundle for Obsidian, Notion, or Git.
+  - **CSV**: Interview questions and answers for Anki or spreadsheets.
+
+---
+
+## 🚀 Quick Start
+
+### Prerequisites
+- Node.js (v18+)
+- npm or yarn
+
+### 1. Installation
+```bash
+npm install
+```
+
+### 2. Development Server
+Start the local Vite dev server on port 3000:
+```bash
+npm run dev
+```
+Open your browser at `http://localhost:3000`.
+
+### 3. Production Build
+```bash
+npm run build
+```
+The optimized production bundle will be generated in the `dist/` directory.
+
+---
+
+## 🌐 Free $0 Deployment Options
+
+Because this application is a pure client-side SPA with local-first storage, it can be hosted for **$0 / month** indefinitely on any free tier:
+
+### Option A: Vercel ($0 Free Tier)
+1. Push your repository to GitHub.
+2. Sign in to [Vercel](https://vercel.com/) and click **Add New Project**.
+3. Import your GitHub repository.
+4. Framework Preset: **Vite**.
+5. Build Command: `npm run build`.
+6. Output Directory: `dist`.
+7. Click **Deploy**.
+
+### Option B: Netlify ($0 Free Tier)
+1. Sign in to [Netlify](https://www.netlify.com/).
+2. Select **Import from Git**.
+3. Set Build Command to `npm run build` and Publish Directory to `dist`.
+4. Deploy!
+
+### Option C: Firebase Hosting ($0 Spark Free Plan)
+1. Install Firebase CLI: `npm install -g firebase-tools`
+2. Run `firebase init hosting`:
+   - Public directory: `dist`
+   - Configure as single-page app: `Yes`
+3. Run `npm run build && firebase deploy --only hosting`
+
+### Option D: GitHub Pages ($0 Free)
+Use the `gh-pages` npm package or configure GitHub Actions to deploy the `dist/` folder on push to `main`.
+
+---
+
+## 💾 Universal Backup & Restore Instructions
+
+### Exporting your Notes
+1. Click the hard drive icon in the navbar (or visit `#manage`).
+2. Choose your format:
+   - **Download .JSON**: Saves your entire database including progress marks, custom topics, and star states.
+   - **Download .MD**: Saves human-readable Markdown notes.
+   - **Download .CSV**: Saves all interview questions and answers.
+
+### Restoring from Backup
+1. Navigate to `#manage`.
+2. Under **Import Knowledge Backup**, either click **Upload Backup File** to select your `.json` backup or paste raw JSON text into the textarea.
+3. Click **Parse & Restore JSON**.
+
+---
+
+## ⌨️ Keyboard Shortcuts
+
+| Shortcut | Action |
+| :--- | :--- |
+| `Ctrl + K` or `Cmd + K` | Open Global Search modal |
+| `↑` / `↓` | Navigate search results |
+| `Enter` | Select and open topic |
+| `Esc` | Close search modal |
+| `Print` (`Ctrl + P`) | Print 30-sec revision sheets |

@@ -1,0 +1,8 @@
+{
+  "name": "Engineering Knowledge Hub",
+  "description": "Personal study and interview-preparation knowledge base for software engineers with structured subjects, quick revision, and interactive practice.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
