@@ -118,7 +118,14 @@ export default function App() {
       activeSubject = sub;
       if (routeParts.length >= 4) {
         // e.g. /subjects/dotnet/aspnet-core/middleware
-        const topic = storageService.getTopic(routeParts[3]);
+        // Slugs are only unique within a section, so resolve inside the section first.
+        const section = storageService.getSection(routeParts[2]);
+        const topic =
+          (section &&
+            storageService
+              .getTopicsBySection(section.id)
+              .find((t) => t.slug === routeParts[3] || t.id === routeParts[3])) ||
+          storageService.getTopic(routeParts[3]);
         if (topic) {
           activeTopic = topic;
           activeView = 'topic';

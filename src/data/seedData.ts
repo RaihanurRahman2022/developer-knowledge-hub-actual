@@ -3,6 +3,10 @@ import { initialDotnetHistorySections, initialDotnetHistoryTopics } from './dotn
 import { curriculumSections, curriculumTopics } from './dotnetCurriculumData';
 import { efSections, efTopics } from './efCurriculumData';
 import { sqlSections, sqlTopics } from './sqlCurriculumData';
+import { buildCurriculumFromOutline } from './outlineCurriculum';
+import goMongoOutline from './outlines/goMongoOutline.md?raw';
+
+const goMongo = buildCurriculumFromOutline(goMongoOutline, '2026-10-02');
 
 export const initialSubjects: Subject[] = [
   {
@@ -72,6 +76,28 @@ export const initialSubjects: Subject[] = [
     order: 6,
   },
   {
+    id: 'subj-go',
+    slug: 'go',
+    name: 'Go',
+    shortDescription: 'Concurrent systems programming, goroutines, GMP scheduler, memory management, and network services.',
+    icon: 'Zap',
+    color: 'from-cyan-600 to-blue-600',
+    lastUpdated: '2026-10-02',
+    isPinned: true,
+    order: 4,
+  },
+  {
+    id: 'subj-nosql',
+    slug: 'nosql',
+    name: 'NoSQL',
+    shortDescription: 'Document databases with MongoDB: modeling, CRUD, indexes, aggregation, transactions, replication, sharding, and Go integration.',
+    icon: 'Boxes',
+    color: 'from-amber-600 to-orange-700',
+    lastUpdated: '2026-10-02',
+    isPinned: false,
+    order: 5,
+  },
+  {
     id: 'subj-aws',
     slug: 'aws',
     name: 'AWS',
@@ -89,6 +115,7 @@ export const initialSections: Section[] = [
   ...curriculumSections,
   ...efSections,
   ...sqlSections,
+  ...goMongo.sections,
 ];
 
 export const initialTopics: Topic[] = [
@@ -96,6 +123,7 @@ export const initialTopics: Topic[] = [
   ...curriculumTopics,
   ...efTopics,
   ...sqlTopics,
+  ...goMongo.topics,
 ];
 
 export const initialProgress: Record<string, { status: any; isFavorite: boolean; revisionCount: number }> = {};

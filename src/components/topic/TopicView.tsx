@@ -267,6 +267,21 @@ export const TopicView: React.FC<TopicViewProps> = ({
 
   const articleSections = getResolvedSections(editedTopic);
 
+  // While listening, open the collapsed Q&A / accordion blocks of the section being read
+  // so the read-along highlight can follow their text.
+  useEffect(() => {
+    const sec = articleSections.find((s) => s.id === listeningSectionId);
+    const blocks = sec?.blocks || [];
+    const questionIds = blocks.filter((b) => b.type === 'question').map((b) => b.id);
+    const accordionIds = blocks.filter((b) => b.type === 'accordion').map((b) => b.id);
+    if (questionIds.length > 0) {
+      setExpandedQuestions((prev) => ({ ...prev, ...Object.fromEntries(questionIds.map((id) => [id, true])) }));
+    }
+    if (accordionIds.length > 0) {
+      setExpandedAccordions((prev) => ({ ...prev, ...Object.fromEntries(accordionIds.map((id) => [id, true])) }));
+    }
+  }, [listeningSectionId]);
+
   // Sync editedTopic when prop changes
   useEffect(() => {
     setEditedTopic(topic);

@@ -347,3 +347,88 @@
   border-top-color: #334155;
 }
 
+
+/* ---------------------------------------------------------------------------
+   Article listener (src/components/topic/ArticleListener.tsx)
+   --------------------------------------------------------------------------- */
+
+/* Read-along highlights (CSS Custom Highlight API) */
+::highlight(tts-sentence) {
+  background-color: rgb(99 102 241 / 0.12);
+}
+::highlight(tts-word) {
+  background-color: rgb(250 204 21 / 0.65);
+  color: #0f172a;
+}
+.dark ::highlight(tts-sentence) {
+  background-color: rgb(129 140 248 / 0.2);
+}
+.dark ::highlight(tts-word) {
+  background-color: rgb(250 204 21 / 0.9);
+  color: #0f172a;
+}
+
+/* Equalizer bars */
+.tts-eq {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 12px;
+}
+.tts-eq-bar {
+  width: 3px;
+  height: 100%;
+  border-radius: 2px;
+  background: currentColor;
+  transform-origin: bottom;
+  transform: scaleY(0.3);
+  transition: transform 0.3s ease;
+}
+.tts-eq[data-active='true'] .tts-eq-bar {
+  animation: tts-eq 0.9s ease-in-out infinite;
+}
+@keyframes tts-eq {
+  0%, 100% { transform: scaleY(0.25); }
+  50% { transform: scaleY(1); }
+}
+
+/* Animated gradient border of the floating player */
+.tts-gradient-border {
+  background: linear-gradient(90deg, #6366f1, #a855f7, #ec4899, #f59e0b, #22d3ee, #6366f1);
+  background-size: 300% 100%;
+  animation: tts-border 8s linear infinite;
+}
+.tts-gradient-border[data-paused='true'] {
+  animation-play-state: paused;
+  filter: saturate(0.6);
+}
+@keyframes tts-border {
+  to { background-position: 300% 0; }
+}
+
+/* Slide-up entrance */
+.tts-enter {
+  animation: tts-enter 0.4s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+@keyframes tts-enter {
+  from { opacity: 0; transform: translateY(28px) scale(0.97); }
+  to { opacity: 1; transform: none; }
+}
+
+/* Pulsing ring around the play button while speaking */
+.tts-pulse {
+  animation: tts-ring 1.6s cubic-bezier(0, 0, 0.2, 1) infinite;
+}
+@keyframes tts-ring {
+  from { box-shadow: 0 0 0 0 rgb(139 92 246 / 0.55); }
+  to { box-shadow: 0 0 0 14px rgb(139 92 246 / 0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tts-eq[data-active='true'] .tts-eq-bar,
+  .tts-gradient-border,
+  .tts-enter,
+  .tts-pulse {
+    animation: none;
+  }
+}
